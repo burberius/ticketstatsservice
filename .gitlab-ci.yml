@@ -1,0 +1,68 @@
+image: openjdk:11
+
+stages:
+  - security
+  - test
+  - package
+  - docker
+  - deploy
+  - verify
+
+security:
+  stage: security
+  only:
+    - schedules
+  script: ./mvnw clean -Psecurity verify
+
+test:
+  stage: test
+  except:
+    - schedules
+  script:
+    - "./mvnw verify"
+    - "awk -F\",\" '{ instructions += $4 + $5; covered += $5 } END { print covered, \"/\", instructions, \" instructions covered\"; print 100*covered/instructions, \"% covered\" }' target/jacoco/jacoco.csv"
+
+package:
+  stage: package
+  except:
+    - schedules
+  script: ./mvnw package
+  artifacts:
+    paths:
+      - target/ticketstats-0.0.1-SNAPSHOT.jar
+    expire_in: 1 hour
+
+docker:
+  stage: docker
+  image: docker:latest
+  except:
+    - schedules
+  services:
+    - docker:dind
+  variables:
+     DOCKER_HOST: tcp://docker:2375
+     DOCKER_DRIVER: overlay2
+  script:
+    - "docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY"
+    - "docker build -t registry.gitlab.com/burberius/digidesk-stats ."
+    - "docker push registry.gitlab.com/burberius/digidesk-stats"
+
+deploy:
+  stage: deploy
+  image: kroniak/ssh-client
+  except:
+    - schedules
+  script:
+    - "mkdir -p ~/.ssh"
+    - "chmod 700 ~/.ssh"
+    - "echo -e \"Host *\n\tStrictHostKeyChecking no\n\n\" > ~/.ssh/config"
+    - "echo \"$SSHKEY\" > ~/.ssh/id_rsa"
+    - "chmod 600 ~/.ssh/id_rsa"
+    - "ssh didge@35.276.222.44 ./restart.sh"
+
+verify:
+  stage: verify
+  image: jess/jq
+  except:
+    - schedules
+  script: "./test.sh"
